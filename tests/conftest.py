@@ -110,3 +110,14 @@ def sample_rules():
         yield [rule1, rule2]
     finally:
         db.close()
+import pytest
+from unittest.mock import patch
+
+@pytest.fixture(autouse=True)
+def mock_openai():
+    with patch("app.openai") as mock:
+        mock.ChatCompletion.create.return_value = {
+            "choices": [{"message": {"content": "mocked fix"}}]
+        }
+        yield mock
+
