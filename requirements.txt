@@ -17,13 +17,8 @@ typing_extensions==4.15.0
 urllib3==2.5.0
 uvicorn==0.35.0
 pandas
-fastapi
-uvicorn
-sqlalchemy
-psycopg2-binary
-alembic
-pydantic
 python-dotenv
-pandas
 openai
-
+sqlalchemy
+alembic
+psycopg2-binary

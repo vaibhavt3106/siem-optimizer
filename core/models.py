@@ -22,13 +22,16 @@ class DriftStats(BaseModel):
 
 
 class SchemaRequest(BaseModel):
-    schema_def: Dict[str, Any]   # ✅ renamed from schema → schema_def
+    schema_data: Dict[str, Any]
 
 class SchemaRegistry(BaseModel):
-    source: str
-    schema_def: Dict[str, Any]   # ✅ same rename here
+    id: Optional[int] = None
+    source: str  
+    schema_data: Dict[str, Any]
     version: str
     last_updated: datetime
+
+    model_config = {"from_attributes": True}
 
 
 

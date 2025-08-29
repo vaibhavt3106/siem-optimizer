@@ -27,12 +27,15 @@ from db.schema_registry import SchemaRegistryDB
 # Utils
 from core.schema_utils import diff_schemas
 
-# OpenAI
-from openai import OpenAI
-api_key = os.getenv("OPENAI_API_KEY")
-if not api_key:
-    raise RuntimeError("OPENAI_API_KEY is not set in environment")
-client = OpenAI(api_key=api_key)
+# OpenAI (optional - only if API key is provided)
+client = None
+try:
+    from openai import OpenAI
+    api_key = os.getenv("OPENAI_API_KEY")
+    if api_key:
+        client = OpenAI(api_key=api_key)
+except ImportError:
+    pass
 
 from pydantic import BaseModel
 
@@ -40,8 +43,15 @@ from pydantic import BaseModel
 # FastAPI app
 # --------------------------------------------------
 app = FastAPI(title="Next-Gen SIEM Optimizer")
-Base.metadata.create_all(bind=engine)
 
+# Create tables (safety net - Alembic is preferred)
+# Only create tables if not in test environment
+import os
+if not os.getenv("TESTING"):
+    Base.metadata.create_all(bind=engine)
+
+# Export Base for tests
+__all__ = ["app", "Base", "get_db"]
 
 # --------------------------------------------------
 # DB Session Dependency
@@ -52,7 +62,6 @@ def get_db():
         yield db
     finally:
         db.close()
-
 
 # --------------------------------------------------
 # Connectors
@@ -70,14 +79,12 @@ sentinel = SentinelConnector(
     client_secret="your-secret"
 )
 
-
 # --------------------------------------------------
 # System
 # --------------------------------------------------
 @app.get("/health", summary="Health Check", tags=["System"])
 def health_check():
     return {"status": "ok"}
-
 
 # --------------------------------------------------
 # Rules
@@ -97,12 +104,8 @@ def list_rules(db: Session = Depends(get_db)):
     db.commit()
     return db.query(RuleDB).all()
 
-
-# ... keep all your existing imports ...
-
 @app.get("/rules/{rule_id}/drift", summary="Check Rule Drift", tags=["Drift Analysis"])
 def check_rule_drift(rule_id: str, db: Session = Depends(get_db)):
-    # Generate simulated drift stats
     fp_rate = round(random.uniform(0, 0.5), 2)
     tp_rate = round(random.uniform(0, 1.0), 2)
     alert_volume = random.randint(0, 500)
@@ -134,20 +137,16 @@ def check_rule_drift(rule_id: str, db: Session = Depends(get_db)):
         "drift_type": drift_db.drift_type
     }
 
-
-
-
 # --------------------------------------------------
 # Schema Registry
 # --------------------------------------------------
 @app.post("/schema/{source}", response_model=SchemaRegistry, tags=["Schema Registry"])
 def store_schema(source: str, body: SchemaRequest, version: str, db: Session = Depends(get_db)):
-    entry = SchemaRegistryDB(source=source, schema=body.schema, version=version)
+    entry = SchemaRegistryDB(source=source, schema=body.schema_data, version=version)
     db.add(entry)
     db.commit()
     db.refresh(entry)
     return entry
-
 
 @app.get("/schema/{source}", response_model=SchemaRegistry, tags=["Schema Registry"])
 def get_latest_schema(source: str, db: Session = Depends(get_db)):
@@ -161,7 +160,6 @@ def get_latest_schema(source: str, db: Session = Depends(get_db)):
         raise HTTPException(status_code=404, detail=f"No schema found for {source}")
     return entry
 
-
 @app.get("/schema/{source}/history", response_model=list[SchemaRegistry], tags=["Schema Registry"])
 def get_schema_history(source: str, db: Session = Depends(get_db)):
     return (
@@ -170,7 +168,6 @@ def get_schema_history(source: str, db: Session = Depends(get_db)):
         .order_by(SchemaRegistryDB.last_updated.desc())
         .all()
     )
-
 
 @app.get("/schema/{source}/diff", tags=["Schema Registry"])
 def schema_diff(source: str, from_version: str, to_version: str, db: Session = Depends(get_db)):
@@ -201,14 +198,12 @@ def schema_diff(source: str, from_version: str, to_version: str, db: Session = D
         "drift_score": drift_record.drift_score
     }
 
-
 # --------------------------------------------------
 # Multi-SIEM
 # --------------------------------------------------
 @app.get("/siems", summary="List Supported SIEMs", tags=["SIEM"])
 def list_siems():
     return {"supported_siems": ["Splunk", "Sentinel"]}
-
 
 @app.get("/siem/{name}/rules", summary="List Rules from a SIEM", tags=["SIEM"])
 def list_siem_rules(name: str):
@@ -219,17 +214,17 @@ def list_siem_rules(name: str):
     else:
         return {"error": f"SIEM '{name}' not supported"}
 
-
 # --------------------------------------------------
 # Rule Fix/Autofix/Rollback
 # --------------------------------------------------
 class ApplyFixRequest(BaseModel):
     suggested_fix: str
 
-
 @app.post("/rules/{rule_id}/autofix", tags=["Rules"])
 def autofix_rule(rule_id: str, db: Session = Depends(get_db)):
-    """Ask LLM to auto-fix a rule query (always sanitized)."""
+    if not client:
+        raise HTTPException(status_code=503, detail="OpenAI client not configured. Set OPENAI_API_KEY environment variable.")
+    
     rule = db.query(RuleDB).filter(RuleDB.id == rule_id).first()
     if not rule:
         raise HTTPException(status_code=404, detail="Rule not found")
@@ -250,27 +245,23 @@ def autofix_rule(rule_id: str, db: Session = Depends(get_db)):
         )
         fixed_query = response.choices[0].message.content.strip()
 
-        # Save history
         db.add(RuleHistoryDB(rule_id=rule_id, query=rule.query, action="autofix"))
-
-        # Update rule
         rule.query = fixed_query
         db.commit()
         db.refresh(rule)
 
-        # 🔥 Drift Analysis
         fp_rate = round(random.uniform(0, 0.5), 2)
         tp_rate = round(random.uniform(0, 1.0), 2)
         alert_volume = random.randint(0, 500)
+        drift_score = round(fp_rate * 5 + (1 - tp_rate) * 5 + (alert_volume / 100), 2)
 
-        drift = analyze_rule(rule, fp_rate, tp_rate, alert_volume)
         drift_db = DriftStatsDB(
             rule_id=rule_id,
-            fp_rate=drift.fp_rate,
-            tp_rate=drift.tp_rate,
-            alert_volume=drift.alert_volume,
-            drift_score=drift.drift_score,
-            last_checked=drift.last_checked,
+            fp_rate=fp_rate,
+            tp_rate=tp_rate,
+            alert_volume=alert_volume,
+            drift_score=drift_score,
+            last_checked=datetime.utcnow(),
             drift_type="rule"
         )
         db.add(drift_db)
@@ -280,16 +271,20 @@ def autofix_rule(rule_id: str, db: Session = Depends(get_db)):
             "rule_id": rule_id,
             "original_query": rule.query,
             "suggested_fix": fixed_query,
-            "drift": drift.dict()
+            "drift": {
+                "fp_rate": fp_rate,
+                "tp_rate": tp_rate, 
+                "alert_volume": alert_volume,
+                "drift_score": drift_score,
+                "last_checked": datetime.utcnow(),
+                "drift_type": "rule"
+            }
         }
-
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"LLM call failed: {str(e)}")
 
-
 @app.post("/rules/{rule_id}/apply_fix", tags=["Rules"])
 def apply_fix(rule_id: str, body: ApplyFixRequest, db: Session = Depends(get_db)):
-    """Apply a suggested fix to a rule query (sanitized)."""
     rule = db.query(RuleDB).filter(RuleDB.id == rule_id).first()
     if not rule:
         raise HTTPException(status_code=404, detail="Rule not found")
@@ -305,19 +300,18 @@ def apply_fix(rule_id: str, body: ApplyFixRequest, db: Session = Depends(get_db)
     db.commit()
     db.refresh(rule)
 
-    # 🔥 Drift Analysis
     fp_rate = round(random.uniform(0, 0.5), 2)
     tp_rate = round(random.uniform(0, 1.0), 2)
     alert_volume = random.randint(0, 500)
+    drift_score = round(fp_rate * 5 + (1 - tp_rate) * 5 + (alert_volume / 100), 2)
 
-    drift = analyze_rule(rule, fp_rate, tp_rate, alert_volume)
     drift_db = DriftStatsDB(
         rule_id=rule_id,
-        fp_rate=drift.fp_rate,
-        tp_rate=drift.tp_rate,
-        alert_volume=drift.alert_volume,
-        drift_score=drift.drift_score,
-        last_checked=drift.last_checked,
+        fp_rate=fp_rate,
+        tp_rate=tp_rate,
+        alert_volume=alert_volume,
+        drift_score=drift_score,
+        last_checked=datetime.utcnow(),
         drift_type="rule"
     )
     db.add(drift_db)
@@ -328,10 +322,15 @@ def apply_fix(rule_id: str, body: ApplyFixRequest, db: Session = Depends(get_db)
         "previous_query": previous_query,
         "new_query": sanitized_query,
         "message": "Rule updated with suggested fix",
-        "drift": drift.model_dump()
+        "drift": {
+            "fp_rate": fp_rate,
+            "tp_rate": tp_rate,
+            "alert_volume": alert_volume,
+            "drift_score": drift_score,
+            "last_checked": datetime.utcnow(),
+            "drift_type": "rule"
+        }
     }
-
-
 
 @app.post("/rules/{rule_id}/rollback", tags=["Rules"])
 def rollback_rule(
@@ -357,7 +356,6 @@ def rollback_rule(
         target = history_entries[steps - 1]
 
     db.add(RuleHistoryDB(rule_id=rule_id, query=rule.query, action="rollback"))
-
     rule.query = target.query
     db.commit()
     db.refresh(rule)
@@ -367,9 +365,8 @@ def rollback_rule(
         "restored_query": rule.query,
         "rolled_back_to": target.id,
         "steps_back": steps if not history_id else None,
-        "message": f"Rollback applied successfully"
+        "message": "Rollback applied successfully"
     }
-
 
 @app.get("/rules/{rule_id}/history", tags=["Rules"])
 def get_rule_history(rule_id: str, db: Session = Depends(get_db)):
@@ -384,9 +381,8 @@ def get_rule_history(rule_id: str, db: Session = Depends(get_db)):
         for h in history
     ]
 
-
 # --------------------------------------------------
-# Drift Analysis (Dashboard, Trends, History, Populate)
+# Drift Analysis
 # --------------------------------------------------
 @app.get("/drift/history", tags=["Drift Analysis"])
 def drift_history(
@@ -408,7 +404,6 @@ def drift_history(
     total = query.count()
     events = query.order_by(DriftStatsDB.last_checked.desc()).offset(offset).limit(limit).all()
     return {"total": total, "limit": limit, "offset": offset, "events": events}
-
 
 @app.get("/drift/dashboard", tags=["Drift Analysis"])
 def drift_dashboard(
@@ -446,7 +441,6 @@ def drift_dashboard(
         "from": from_dt.isoformat() if from_dt else None,
         "to": to_dt.isoformat() if to_dt else None
     }
-
 
 @app.get("/drift/trends-enhanced", tags=["Drift Analysis"])
 def drift_trends_enhanced(
@@ -490,7 +484,6 @@ def drift_trends_enhanced(
     df["rolling_avg"] = df["total"].rolling(window=window, min_periods=1).mean().round(2)
 
     return {"window_days": window, "trends": df.to_dict(orient="records")}
-
 
 @app.post("/test/populate_drift", tags=["Test Utilities"])
 def populate_drift(days: int = 7, events_per_day: int = 2, db: Session = Depends(get_db)):

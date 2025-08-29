@@ -5,7 +5,9 @@ from sqlalchemy import engine_from_config, pool
 from alembic import context
 
 # Import your models so Alembic can detect them
-from db.models import Base  
+from db.database import Base
+from db.models import RuleDB, DriftStatsDB, RuleHistoryDB  # Import all models
+from db.schema_registry import SchemaRegistryDB  # Import schema registry model
 
 # ------------------------------------------------
 # Alembic Config
