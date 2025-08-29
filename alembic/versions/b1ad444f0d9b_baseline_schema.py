@@ -1,8 +1,8 @@
-"""create rules and drift_stats tables
+"""baseline schema
 
-Revision ID: 0c8312977981
+Revision ID: b1ad444f0d9b
 Revises: 
-Create Date: 2025-08-26 12:22:54.488814
+Create Date: 2025-08-29 20:51:10.346765
 
 """
 from typing import Sequence, Union
@@ -12,7 +12,7 @@ import sqlalchemy as sa
 
 
 # revision identifiers, used by Alembic.
-revision: str = '0c8312977981'
+revision: str = 'b1ad444f0d9b'
 down_revision: Union[str, Sequence[str], None] = None
 branch_labels: Union[str, Sequence[str], None] = None
 depends_on: Union[str, Sequence[str], None] = None
