@@ -41,6 +41,8 @@ jobs:
 
       - name: Run migrations
         run: alembic upgrade head
+        env:
+          DATABASE_URL: postgresql+psycopg2://siem_user:siem_password@localhost:5432/siem_optimizer
 
       - name: Run tests
         run: pytest -v
