@@ -1,0 +1,49 @@
+name: Run Pytest
+
+on:
+  push:
+    branches: [ main, develop ]
+  pull_request:
+    branches: [ main, develop ]
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+
+    services:
+      postgres:
+        image: postgres:14
+        env:
+          POSTGRES_USER: siem_user
+          POSTGRES_PASSWORD: siem_password
+          POSTGRES_DB: siem_optimizer
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd="pg_isready -U siem_user -d siem_optimizer"
+          --health-interval=10s
+          --health-timeout=5s
+          --health-retries=5
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.9"
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+
+      - name: Run migrations
+        run: alembic upgrade head
+
+      - name: Run tests
+        run: pytest -v
+        env:
+          DATABASE_URL: postgresql+psycopg2://siem_user:siem_password@localhost:5432/siem_optimizer
+          OPENAI_API_KEY: dummy-key-for-tests
